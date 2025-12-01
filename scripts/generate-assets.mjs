@@ -3,7 +3,6 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 
-// Load environment variables manually since we are running a script
 const envPath = path.resolve(process.cwd(), ".env");
 if (fs.existsSync(envPath)) {
   const envConfig = dotenv.parse(fs.readFileSync(envPath));
@@ -13,108 +12,57 @@ if (fs.existsSync(envPath)) {
 }
 
 const API_KEY = process.env.GEMINI_API_KEY;
-
-if (!API_KEY) {
-  console.error("Error: GEMINI_API_KEY not found in .env");
-  process.exit(1);
-}
-
-// NOTE: The @google/generative-ai SDK usually supports text/multimodal. 
-// For Image Generation (Imagen), it often uses a specific model or REST endpoint.
-// We will try using the SDK with the user-specified model "gemini-3-pro-image-preview".
-// If the SDK doesn't support returning raw image bytes for this model, 
-// we might need to adjust to use the REST API directly.
-
-// However, based on recent updates, "gemini-pro" and friends are for text/chat.
-// Imagen usage via the Gemini API key often looks like this:
-// https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict
+const genAI = new GoogleGenerativeAI(API_KEY);
 
 async function generateImage(prompt, filename) {
   console.log(`Generating ${filename}...`);
   console.log(`Prompt: ${prompt}`);
 
-  // Trying the user-suggested model name
-  const modelName = "gemini-3-pro-image-preview"; 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:predict?key=${API_KEY}`;
-  
-  const payload = {
-    instances: [
-      {
-        prompt: prompt,
-      }
-    ],
-    parameters: {
-      sampleCount: 1,
-      aspectRatio: "1:1", 
-      outputOptions: {
-          mimeType: "image/png"
-      }
-    }
-  };
-
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API Error: ${response.status} - ${errorText}`);
-    }
-
-    const data = await response.json();
+    // The model name from the list
+    const model = genAI.getGenerativeModel({ model: "gemini-3-pro-image-preview" });
     
-    // The structure for Imagen response is usually:
-    // { predictions: [ { bytesBase64Encoded: "..." } ] }
+    // For image generation models in Gemini, we often send the prompt as text.
+    // The response should contain the image data.
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
     
-    if (data.predictions && data.predictions.length > 0) {
-        const base64Image = data.predictions[0].bytesBase64Encoded;
-        const buffer = Buffer.from(base64Image, "base64");
-        const outputPath = path.join(process.cwd(), "public", "images", filename);
-        fs.writeFileSync(outputPath, buffer);
-        console.log(`✅ Saved to ${outputPath}`);
+    // Check for inline data (base64 images)
+    // Note: The structure might vary. Often it is candidates[0].content.parts[0].inlineData
+    if (response.candidates && response.candidates.length > 0) {
+        const parts = response.candidates[0].content.parts;
+        // Look for the part that has inlineData (image)
+        const imagePart = parts.find(p => p.inlineData);
+
+        if (imagePart) {
+            const base64Image = imagePart.inlineData.data;
+            const buffer = Buffer.from(base64Image, "base64");
+            const outputPath = path.join(process.cwd(), "public", "images", filename);
+            // Ensure directory exists
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+            fs.writeFileSync(outputPath, buffer);
+            console.log(`✅ Saved to ${outputPath}`);
+            return outputPath;
+        } else {
+            console.error("❌ No inline image data found in response parts.");
+             console.log(JSON.stringify(response, null, 2));
+        }
     } else {
-        console.error("❌ No image data received:", JSON.stringify(data, null, 2));
+        console.error("❌ No candidates in response.");
     }
 
   } catch (error) {
-    console.error(`❌ Failed to generate ${filename}:`, error.message);
+    console.error(`❌ Failed to generate ${filename}:`, error);
   }
 }
 
-const assets = [
-  {
-    filename: "logo.png",
-    prompt: "A flat, vector-style logo for an AI consultancy named 'Vital Enterprises'. Symbol: Fusion of a 'digital circuit node' and a 'conifer tree/fern leaf'. Colors: Deep Emerald Green (#2F4F4F) and Metallic Silver. Minimalist, trustworthy, white background."
-  },
-  {
-    filename: "hero-bg.png",
-    prompt: "High-quality photorealistic image of a foggy forest in the Pacific Northwest, overlaid with a subtle, geometric 'white wireframe' neural network node pattern. Moody, atmospheric, 'Pacific Northwest Modern Tech' aesthetic. Wide aspect ratio."
-  },
-  {
-    filename: "hardware.png",
-    prompt: "A sleek silver AI device (Nvidia DGX Spark) sitting on a wooden desk in a modern office. Natural 'Golden Hour' lighting. Subtle holographic data dashboard floating slightly above the device. Photorealistic."
-  },
-  {
+const onePagerAsset = {
     filename: "marketing-onepager.png",
-    prompt: "Photorealistic scene: A small business owner (man in flannel shirt) and a professional consultant (woman) looking at a sleek silver device on a desk. Collaborative, empowering atmosphere. Soft natural light."
-  }
-];
+    prompt: "Photorealistic scene: A small business owner (man in flannel shirt) and a professional consultant (woman) looking at a sleek silver device on a desk. Collaborative, empowering atmosphere. Soft natural light. High quality, 4k."
+};
 
 async function main() {
-  for (const asset of assets) {
-    // Adjust aspect ratio for hero image
-    if (asset.filename === 'hero-bg.png') {
-       // Note: The simple REST call above has fixed aspect ratio. 
-       // For this script, we'll stick to 1:1 or 4:3 (default) unless we change params.
-       // Let's keep it simple for now.
-    }
-    await generateImage(asset.prompt, asset.filename);
-  }
+    await generateImage(onePagerAsset.prompt, onePagerAsset.filename);
 }
 
 main();
